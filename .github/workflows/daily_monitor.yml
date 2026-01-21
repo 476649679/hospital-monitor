@@ -3,7 +3,7 @@ name: Ultimate Monitor
 on:
   schedule:
     - cron: '0 0,6,12 * * *' # 每天北京时间 8点, 14点, 20点 各跑一次
-  workflow_dispatch:
+  workflow_dispatch: # 允许手动点击按钮测试
 
 # 赋予仓库写入权限，用于保存历史记录
 permissions:
@@ -38,4 +38,5 @@ jobs:
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         git add history.json
+        # 如果没有变化则跳过，避免报错
         git diff-index --quiet HEAD || (git commit -m "Update history [skip ci]" && git push)
