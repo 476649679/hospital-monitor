@@ -63,7 +63,7 @@ def search_bing(keyword, site=""):
     """
     results = []
     query = f"{keyword} {site}".strip()
-    url = f"https://www.bing.com/search?q={query}&sort=date" # 尝试按时间排序
+    url = f"https://www.bing.com/search?q={query}&sort=date" 
     
     try:
         resp = requests.get(url, headers=get_headers(), timeout=15)
@@ -75,7 +75,10 @@ def search_bing(keyword, site=""):
             if not title_tag: continue
             
             link_tag = title_tag.find('a')
-            if not link_link := link_tag.get('href'): continue
+            if not link_tag: continue # 修复点：先检查有没有link_tag
+
+            link_link = link_tag.get('href') # 修复点：拆分成两行写，避免语法错误
+            if not link_link: continue
             
             title = link_tag.text
             # 尝试获取摘要
