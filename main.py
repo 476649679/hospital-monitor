@@ -11,7 +11,7 @@ import random
 KEYWORDS = ["韶关市妇幼保健院", "韶关妇幼"]
 # 定义要专门“定点爆破”的社交平台域名
 TARGET_SITES = [
-    "", # 空字符串代表全网新闻搜索
+   # "", # 空字符串代表全网新闻搜索
     "site:weibo.cn", # 微博 (使用手机版域名收录更快)
     "site:zhihu.com", # 知乎
     "site:xiaohongshu.com", # 小红书
