@@ -1,3 +1,2 @@
+xhs
 requests
-beautifulsoup4
-lxml
