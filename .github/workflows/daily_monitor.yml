@@ -23,11 +23,12 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install requests beautifulsoup4 lxml
+        pip install requests xhs
 
     - name: Run script
       env:
         PUSH_TOKEN: ${{ secrets.PUSH_TOKEN }}
+        XHS_COOKIE: ${{ secrets.XHS_COOKIE }}
       run: |
         python main.py
 
@@ -35,7 +36,7 @@ jobs:
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
-        # 关键修复：先拉取最新代码，防止冲突
-        git pull origin main --rebase
+        # 关键修复：先拉取远程更新，解决冲突
+        git pull origin main --rebase || echo "无更新需拉取"
         git add history.json
         git diff-index --quiet HEAD || (git commit -m "Update history [skip ci]" && git push)
