@@ -10,7 +10,7 @@ import re
 
 # --- 核心配置区 ---
 # 建议加上 "医院" "公告" 等后缀，搜索结果更精准
-KEYWORDS = [“韶关 医院”，“医院”，"韶关市妇幼保健院", "韶关妇幼保健院", "韶关妇幼 投诉", "韶关妇幼 避雷"]
+KEYWORDS = ["医院","韶关 医院","韶关市妇幼保健院", "韶关妇幼保健院", "韶关妇幼 投诉", "韶关妇幼 避雷"]
 
 PUSH_TOKEN = os.environ.get("PUSH_TOKEN")
 HISTORY_FILE = "history.json"
