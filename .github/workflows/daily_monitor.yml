@@ -2,10 +2,9 @@ name: Ultimate Monitor
 
 on:
   schedule:
-    - cron: '0 0,6,12 * * *' # 每天北京时间 8点, 14点, 20点 各跑一次
-  workflow_dispatch: # 允许手动点击按钮测试
+    - cron: '0 0,6,12 * * *'
+  workflow_dispatch:
 
-# 赋予仓库写入权限，用于保存历史记录
 permissions:
   contents: write
 
@@ -24,7 +23,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install -r requirements.txt
+        pip install requests beautifulsoup4 lxml
 
     - name: Run script
       env:
@@ -32,11 +31,11 @@ jobs:
       run: |
         python main.py
 
-    # 自动提交 history.json 回仓库
     - name: Commit history
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
+        # 关键修复：先拉取最新代码，防止冲突
+        git pull origin main --rebase
         git add history.json
-        # 如果没有变化则跳过，避免报错
         git diff-index --quiet HEAD || (git commit -m "Update history [skip ci]" && git push)
