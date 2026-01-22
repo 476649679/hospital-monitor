@@ -1,120 +1,140 @@
-import requests
-from bs4 import BeautifulSoup
-import datetime
 import os
 import json
-import hashlib
 import time
-import random
-import re
+import hashlib
+import requests
+from xhs import XhsClient
 
-# --- 核心配置区 ---
-KEYWORDS = ["韶关市妇幼保健院", "韶关妇幼", "韶关产科"]
+# --- 核心配置 ---
+# 必须包含这些词才算有效（防止抓到无关广告）
+MUST_INCLUDE = ["韶关", "妇幼"] 
+# 监控搜索词
+SEARCH_KEYWORDS = ["韶关市妇幼保健院", "韶关妇幼", "韶关产科", "韶关 避雷"]
+# 负面敏感词
+NEGATIVE_WORDS = ["避雷", "坑", "差", "事故", "垃圾", "无语", "投诉", "死", "黑"]
+
+# 环境变量
+COOKIE = os.environ.get("XHS_COOKIE")
 PUSH_TOKEN = os.environ.get("PUSH_TOKEN")
 HISTORY_FILE = "history.json"
 
-def get_headers():
-    user_agents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Safari/605.1.15'
-    ]
-    return {
-        'User-Agent': random.choice(user_agents),
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Referer': 'https://cn.bing.com/'
+def send_wechat(title, content):
+    """发送微信推送"""
+    if not PUSH_TOKEN: return
+    url = "http://www.pushplus.plus/send"
+    data = {
+        "token": PUSH_TOKEN,
+        "title": title,
+        "content": content,
+        "template": "markdown"
     }
-
-def contains_chinese(text):
-    return bool(re.search(r'[\u4e00-\u9fa5]', text))
+    try:
+        requests.post(url, json=data)
+    except:
+        pass
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-            try:
+        try:
+            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
                 return set(json.load(f))
-            except:
-                return set()
+        except:
+            return set()
     return set()
 
 def save_history(history_set):
-    limited_history = list(history_set)[-1000:]
+    # 只保留最后1000条
+    data = list(history_set)[-1000:]
     with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-        json.dump(limited_history, f)
+        json.dump(data, f)
 
-def search_cn_bing(keyword):
-    results = []
-    url = f"https://cn.bing.com/search?q={keyword}&cc=CN&setmkt=zh-CN&first=1"
-    
-    try:
-        print(f"正在抓取: {keyword} ...")
-        resp = requests.get(url, headers=get_headers(), timeout=20)
-        soup = BeautifulSoup(resp.text, 'lxml')
-        
-        for item in soup.find_all('li', class_='b_algo'):
-            title_tag = item.find('h2')
-            if not title_tag: continue
-            
-            link_tag = title_tag.find('a')
-            if not link_tag: continue
-            
-            # --- 修复点：拆分写法，解决 SyntaxError ---
-            link = link_tag.get('href')
-            if not link: continue
-            # -------------------------------------
-            
-            title = link_tag.text.strip()
-            if not contains_chinese(title): continue
-            
-            snippet = ""
-            caption_div = item.find('div', class_='b_caption')
-            if caption_div:
-                p_tag = caption_div.find('p')
-                snippet = p_tag.text.strip() if p_tag else ""
-
-            results.append({
-                "title": title,
-                "link": link,
-                "snippet": snippet,
-                "source": "BingCN"
-            })
-    except Exception as e:
-        print(f"抓取异常: {e}")
-    
-    return results
-
-def send_push(content_list):
-    if not content_list: return
-    title = f"📢 {datetime.date.today()} 韶关妇幼舆情 ({len(content_list)}条)"
-    content = "#### 🔍 监控日报\n------------------\n\n" + "\n\n".join(content_list)
-    url = "http://www.pushplus.plus/send"
-    data = {"token": PUSH_TOKEN, "title": title, "content": content, "template": "markdown"}
-    requests.post(url, json=data)
+def check_relevance(text):
+    """【铁律】内容必须包含关键词，否则视为垃圾丢弃"""
+    for word in MUST_INCLUDE:
+        if word not in text:
+            return False
+    return True
 
 def main():
-    history = load_history()
-    new_entries = []
+    print(">>> 启动小红书精准监控...")
     
-    for keyword in KEYWORDS:
-        results = search_cn_bing(keyword)
-        for item in results:
-            unique_str = item['link']
-            uid = hashlib.md5(unique_str.encode()).hexdigest()
-            if uid in history: continue
+    if not COOKIE:
+        print("❌ 错误：未设置 XHS_COOKIE")
+        # 如果没有Cookie，尝试发一条报错给微信，提醒你去设置
+        send_wechat("❌ 监控中断", "请去 GitHub Settings -> Secrets 填写 XHS_COOKIE")
+        return
+
+    client = XhsClient(cookie=COOKIE)
+    history = load_history()
+    new_notes = []
+    
+    for keyword in SEARCH_KEYWORDS:
+        print(f"正在搜索: {keyword}")
+        try:
+            # 搜索笔记，sort='time' 按时间排序
+            notes = client.get_note_by_keyword(keyword, sort='time', page=1, page_size=20)
+        except Exception as e:
+            print(f"⚠️ 接口报错 (可能是Cookie过期): {e}")
+            continue
+
+        if not notes or 'items' not in notes:
+            continue
+
+        for note in notes['items']:
+            # --- 数据提取 ---
+            note_id = note.get('id')
+            if not note_id: continue
+            
+            card = note.get('note_card', {})
+            title = card.get('display_title', '无标题')
+            desc = card.get('desc', '') # 获取笔记正文摘要
+            user = card.get('user', {}).get('nickname', '未知')
+            
+            # --- 关键过滤步骤 ---
+            full_text = title + desc
+            
+            # 1. 必须包含“韶关”和“妇幼”，否则跳过
+            if not check_relevance(full_text):
+                continue
+                
+            # 2. 去重
+            uid = hashlib.md5(note_id.encode()).hexdigest()
+            if uid in history:
+                continue
             
             history.add(uid)
-            is_risk = any(w in (item['title'] + item['snippet']) for w in ["投诉", "死", "差", "避雷", "事故"])
-            emoji = "🔴" if is_risk else "🔵"
-            entry = f"{emoji} **[{item['title']}]({item['link']})**\n> {item['snippet'][:80]}..."
-            new_entries.append(entry)
-        time.sleep(random.uniform(2, 5))
+            
+            # 3. 负面判定
+            is_risk = False
+            for risk_word in NEGATIVE_WORDS:
+                if risk_word in full_text:
+                    is_risk = True
+                    break
+            
+            # --- 组装消息 ---
+            link = f"https://www.xiaohongshu.com/explore/{note_id}"
+            emoji = "🔴" if is_risk else "📝"
+            risk_tag = "**[⚠️高危]** " if is_risk else ""
+            
+            entry = f"{emoji} {risk_tag}**{title}**\n" \
+                    f"> 👤 {user}\n" \
+                    f"> 📄 {desc[:60]}...\n" \
+                    f"> 🔗 [点击查看]({link})"
+            
+            new_notes.append(entry)
+            
+        time.sleep(2)
 
-    if new_entries:
-        print(f"✅ 发现 {len(new_entries)} 条内容，推送中...")
-        send_push(new_entries)
+    if new_notes:
+        print(f"✅ 发现 {len(new_notes)} 条新笔记，推送中...")
+        title = f"📢 小红书舆情 ({len(new_notes)}条)"
+        content = "#### 🔍 监控日报\n\n" + "\n\n".join(new_notes)
+        send_wechat(title, content)
         save_history(history)
     else:
-        print("⭕ 今日无新内容")
+        print("⭕ 今日无新增相关笔记")
+        # 发送心跳，证明脚本活着
+        send_wechat("✅ 监控正常", f"脚本运行完毕，未发现关于“韶关妇幼”的新增笔记。\n时间: {time.strftime('%H:%M')}")
 
 if __name__ == "__main__":
     main()
