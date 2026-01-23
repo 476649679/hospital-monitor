@@ -7,9 +7,8 @@ import traceback
 from xhs import XhsClient
 
 # --- 核心配置 ---
-# 只要包含"韶关"就抓取
-MUST_INCLUDE = ["韶关"] 
-SEARCH_KEYWORDS = ["韶关市妇幼保健院", "韶关妇幼", "韶关 产科", "韶关 避雷"]
+MUST_INCLUDE = ["的"] 
+SEARCH_KEYWORDS = ["产科","韶关市妇幼保健院", "韶关妇幼", "韶关 产科", "韶关 避雷"]
 NEGATIVE_WORDS = ["避雷", "坑", "差", "事故", "垃圾", "无语", "投诉", "死", "黑"]
 
 # 环境变量
@@ -33,32 +32,17 @@ def send_wechat(title, content):
         pass
 
 def get_valid_cookie_string(raw_input):
-    """
-    【核心修复】
-    不管输入是 JSON 还是普通文本，最后强制转换成 'k=v; k=v' 的字符串
-    解决 'dict object has no attribute split' 问题
-    """
-    if not raw_input:
-        return None
-    
-    # 1. 尝试看看是不是 JSON 格式的字典
+    """清洗 Cookie 格式"""
+    if not raw_input: return None
     try:
         cookie_dict = json.loads(raw_input)
         if isinstance(cookie_dict, dict):
-            # 如果是字典，把它拼回成字符串 "key=value; key=value"
-            print("检测到 JSON 格式 Cookie，正在转换为字符串...")
-            cookie_parts = []
-            for k, v in cookie_dict.items():
-                cookie_parts.append(f"{k}={v}")
-            return "; ".join(cookie_parts)
+            return "; ".join([f"{k}={v}" for k, v in cookie_dict.items()])
     except:
-        pass # 不是 JSON，那说明本身就是字符串
-    
-    # 2. 如果本身就是字符串，直接用，但清理一下首尾空格/引号
+        pass
     clean_str = raw_input.strip()
     if clean_str.startswith('"') and clean_str.endswith('"'):
         clean_str = clean_str[1:-1]
-        
     return clean_str
 
 def load_history():
@@ -83,23 +67,47 @@ def check_relevance(text):
         if word in text: return True
     return False
 
+def validate_cookie_alive(client):
+    """
+    【看门狗机制】
+    尝试搜索一个绝对热门的词（如"小红书"），如果返回空，说明Cookie已死
+    """
+    try:
+        print("🔍 正在进行 Cookie 活性检测...")
+        # 搜索"你好"，理论上必定有结果
+        test_notes = client.get_note_by_keyword("你好", page=1, page_size=1)
+        
+        # 如果返回的数据结构不对，或者 items 为空，说明 Cookie 只是在"空转"
+        if not test_notes or 'items' not in test_notes or len(test_notes['items']) == 0:
+            return False, "API返回数据为空（隐性失效）"
+            
+        return True, "Cookie 活性正常"
+    except Exception as e:
+        # 如果直接抛出异常，更是失效了
+        return False, str(e)
+
 def main():
-    print(">>> 启动小红书监控 (字符串强制版)...")
+    print(">>> 启动小红书监控 (防假死版)...")
     
     try:
-        # 1. 获取并处理 Cookie
         if not COOKIE_RAW:
             raise ValueError("未设置 XHS_COOKIE")
 
-        # 强制转换为字符串
         final_cookie = get_valid_cookie_string(COOKIE_RAW)
-        
-        # 打印一下类型（不打印内容）确认修复
-        print(f"Cookie 类型已修正为: {type(final_cookie)}") 
-
-        # 2. 初始化客户端 (传入字符串)
         client = XhsClient(cookie=final_cookie)
         
+        # --- 1. 先进行看门狗检查 ---
+        is_alive, reason = validate_cookie_alive(client)
+        if not is_alive:
+            print(f"❌ 检测到 Cookie 失效: {reason}")
+            send_wechat(
+                "🚨 严重报警：Cookie已失效", 
+                f"监控脚本检测到 Cookie 已无法获取数据。\n\n原因：{reason}\n\n👉 **请立即去 GitHub 更新 Cookie**，否则监控将停止。"
+            )
+            return # 直接结束，不再做无用功
+
+        # --- 2. 只有检测通过才开始正常任务 ---
+        print("✅ Cookie 检测通过，开始执行监控任务...")
         history = load_history()
         new_notes = []
         
@@ -147,13 +155,12 @@ def main():
             save_history(history)
         else:
             print("⭕ 无新增笔记")
-            send_wechat("✅ 监控运行正常", f"脚本运行完毕，暂无关于“韶关”的新内容。\n时间: {time.strftime('%H:%M')}")
+            send_wechat("✅ 监控正常", f"脚本运行正常，Cookie 活性检测通过。\n暂无关于“韶关”的新内容。\n检测时间: {time.strftime('%H:%M')}")
 
     except Exception as e:
         error_msg = traceback.format_exc()
         print(f"❌ 错误: {error_msg}")
         send_wechat("⚠️ 监控脚本出错", f"详情：\n{str(e)}")
-        # 抛出异常确保 Action 变红
         raise e
 
 if __name__ == "__main__":
