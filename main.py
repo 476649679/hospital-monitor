@@ -7,8 +7,8 @@ import traceback
 from xhs import XhsClient
 
 # --- 核心配置 ---
-MUST_INCLUDE = ["的"] 
-SEARCH_KEYWORDS = ["产科","韶关市妇幼保健院", "韶关妇幼", "韶关 产科", "韶关 避雷"]
+MUST_INCLUDE = ["韶关"] 
+SEARCH_KEYWORDS = ["韶关市妇幼保健院", "韶关妇幼", "韶关 产科", "韶关 避雷"]
 NEGATIVE_WORDS = ["避雷", "坑", "差", "事故", "垃圾", "无语", "投诉", "死", "黑"]
 
 # 环境变量
@@ -32,18 +32,17 @@ def send_wechat(title, content):
         pass
 
 def get_valid_cookie_string(raw_input):
-    """清洗 Cookie 格式"""
-    if not raw_input: return None
+    """清洗并确保 Cookie 是纯净的字符串"""
+    if not raw_input: return ""
     try:
+        # 尝试处理可能是 JSON 的情况
         cookie_dict = json.loads(raw_input)
         if isinstance(cookie_dict, dict):
             return "; ".join([f"{k}={v}" for k, v in cookie_dict.items()])
     except:
         pass
-    clean_str = raw_input.strip()
-    if clean_str.startswith('"') and clean_str.endswith('"'):
-        clean_str = clean_str[1:-1]
-    return clean_str
+    # 否则直接返回去空格的字符串
+    return str(raw_input).strip().strip('"').strip("'")
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -62,105 +61,85 @@ def save_history(history_set):
     except:
         pass
 
-def check_relevance(text):
-    for word in MUST_INCLUDE:
-        if word in text: return True
-    return False
-
-def validate_cookie_alive(client):
-    """
-    【看门狗机制】
-    尝试搜索一个绝对热门的词（如"小红书"），如果返回空，说明Cookie已死
-    """
-    try:
-        print("🔍 正在进行 Cookie 活性检测...")
-        # 搜索"你好"，理论上必定有结果
-        test_notes = client.get_note_by_keyword("你好", page=1, page_size=1)
-        
-        # 如果返回的数据结构不对，或者 items 为空，说明 Cookie 只是在"空转"
-        if not test_notes or 'items' not in test_notes or len(test_notes['items']) == 0:
-            return False, "API返回数据为空（隐性失效）"
-            
-        return True, "Cookie 活性正常"
-    except Exception as e:
-        # 如果直接抛出异常，更是失效了
-        return False, str(e)
-
 def main():
-    print(">>> 启动小红书监控 (防假死版)...")
+    print(">>> 启动小红书监控 (稳定性增强版)...")
     
     try:
-        if not COOKIE_RAW:
-            raise ValueError("未设置 XHS_COOKIE")
-
+        # 1. Cookie 深度检查
         final_cookie = get_valid_cookie_string(COOKIE_RAW)
+        if not final_cookie or len(final_cookie) < 50:
+            raise ValueError("Cookie 太短或为空，请重新从浏览器获取完整 Cookie。")
+
+        # 2. 初始化客户端
         client = XhsClient(cookie=final_cookie)
         
-        # --- 1. 先进行看门狗检查 ---
-        is_alive, reason = validate_cookie_alive(client)
-        if not is_alive:
-            print(f"❌ 检测到 Cookie 失效: {reason}")
-            send_wechat(
-                "🚨 严重报警：Cookie已失效", 
-                f"监控脚本检测到 Cookie 已无法获取数据。\n\n原因：{reason}\n\n👉 **请立即去 GitHub 更新 Cookie**，否则监控将停止。"
-            )
-            return # 直接结束，不再做无用功
+        # 3. 核心功能可用性预检 (预防 'NoneType' object is not callable)
+        if not hasattr(client, 'get_note_by_keyword') or client.get_note_by_keyword is None:
+            raise TypeError("小红书接口初始化失败，通常是由于 Cookie 格式不被接受，请重新获取。")
 
-        # --- 2. 只有检测通过才开始正常任务 ---
-        print("✅ Cookie 检测通过，开始执行监控任务...")
+        # 4. 执行活性检测
+        print("🔍 正在探测 Cookie 活性...")
+        try:
+            # 搜索一个必定有结果的词
+            test = client.get_note_by_keyword("你好", page=1, page_size=1)
+            if not test or 'items' not in test or not test['items']:
+                # 虽然没报错，但没数据，说明 Cookie 被小红书拦截了
+                send_wechat("🚨 监控假死警告", "Cookie 虽然能用，但搜索不到任何数据。可能账号被风控或需要更新 Cookie。")
+                return
+        except Exception as e:
+            # 活性检测直接报错，说明 Cookie 彻底坏了
+            send_wechat("🚨 Cookie 已失效", f"小红书拒绝了连接请求。\n错误详情：{str(e)}\n请立即更新 GitHub Secrets。")
+            return
+
+        # 5. 正常监控逻辑
+        print("✅ 活性检测通过，开始扫描...")
         history = load_history()
         new_notes = []
         
         for keyword in SEARCH_KEYWORDS:
-            print(f"正在搜索: {keyword}")
-            try:
-                notes = client.get_note_by_keyword(keyword, sort='time', page=1, page_size=20)
-            except Exception as e:
-                print(f"⚠️ 搜索跳过: {e}")
-                continue
-
-            if not notes or 'items' not in notes:
-                continue
+            print(f"搜索关键词: {keyword}")
+            notes = client.get_note_by_keyword(keyword, sort='time', page=1, page_size=15)
+            
+            if not notes or 'items' not in notes: continue
 
             for note in notes['items']:
                 note_id = note.get('id')
-                if not note_id: continue
-                
                 card = note.get('note_card', {})
                 title = card.get('display_title', '无标题')
-                desc = card.get('desc', '') 
+                desc = card.get('desc', '')
                 
+                # 关键词过滤
                 full_text = title + desc
+                if not any(word in full_text for word in MUST_INCLUDE): continue
                 
-                if not check_relevance(full_text): continue
-                
+                # 去重
                 uid = hashlib.md5(note_id.encode()).hexdigest()
                 if uid in history: continue
                 history.add(uid)
                 
+                # 危险判定
                 is_risk = any(w in full_text for w in NEGATIVE_WORDS)
                 emoji = "🔴" if is_risk else "📝"
+                risk_tag = "**[⚠️高危]** " if is_risk else ""
                 
                 link = f"https://www.xiaohongshu.com/explore/{note_id}"
-                entry = f"{emoji} **[{title}]({link})**\n> {desc[:50]}..."
-                new_notes.append(entry)
+                new_notes.append(f"{emoji} {risk_tag}**[{title}]({link})**\n> {desc[:40]}...")
             
-            time.sleep(2)
+            time.sleep(3) # 稍微慢一点，更像真人
 
+        # 6. 推送结果
         if new_notes:
-            print(f"✅ 发现 {len(new_notes)} 条新笔记")
-            title = f"📢 舆情日报 ({len(new_notes)}条)"
-            content = "#### 🔍 监控结果\n\n" + "\n\n".join(new_notes)
-            send_wechat(title, content)
+            send_wechat(f"📢 发现 {len(new_notes)} 条新笔记", "#### 🔍 监控日报\n\n" + "\n\n".join(new_notes))
             save_history(history)
         else:
-            print("⭕ 无新增笔记")
-            send_wechat("✅ 监控正常", f"脚本运行正常，Cookie 活性检测通过。\n暂无关于“韶关”的新内容。\n检测时间: {time.strftime('%H:%M')}")
+            # 每天还是发个心跳回执
+            send_wechat("✅ 监控运行正常", f"脚本运行完毕，暂无关于“韶关”的新内容。\n时间: {time.strftime('%H:%M')}")
 
     except Exception as e:
-        error_msg = traceback.format_exc()
-        print(f"❌ 错误: {error_msg}")
-        send_wechat("⚠️ 监控脚本出错", f"详情：\n{str(e)}")
+        error_msg = str(e)
+        # 捕捉致命错误直接微信报送
+        print(f"❌ 运行崩溃: {error_msg}")
+        send_wechat("⚠️ 监控脚本崩溃", f"脚本发生致命错误：\n\n`{error_msg}`\n\n请检查 Cookie 是否填写正确或已过期。")
         raise e
 
 if __name__ == "__main__":
