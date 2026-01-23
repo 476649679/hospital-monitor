@@ -6,30 +6,32 @@ import requests
 import traceback
 from xhs import XhsClient
 
-# --- 🎯 核心配置区 ---
+# --- 🎯 核心配置区 (已修改) ---
 
-# 1. 搜索关键词 (广撒网)
+# 1. 搜索关键词 (改成了更短、更广的大词)
+# 逻辑：先用大词把帖子捞出来，再用下面的过滤器筛选
 SEARCH_KEYWORDS = [
-    "韶关 妇幼",
+    "韶关 妇幼",   # 组合搜
     "韶关 产科",
     "韶关 生产",
     "韶关 生孩子",
-    "韶关 避雷",
-    "妇幼保健院", # 搜全名，靠下面的地域词过滤
-    "产科 避雷"   # 搜大类，靠下面的地域词过滤
+    "韶关 避雷",   # 重点监控
+    "妇幼保健院"   # 搜全名，依靠后面的 MUST_INCLUDE 来过滤地域
 ]
 
-# 2. 地域/相关性过滤器 (必须包含其中之一)
+# 2. 地域/相关性过滤器 (防止搜到北京/上海的帖子)
+# 只要帖子内容里包含以下【任意一个】词，就会被保留，否则丢弃
+# 如果你想看全中国的妇幼新闻，就把这就改成: MUST_INCLUDE = []
 MUST_INCLUDE = [
     "韶关", "武江", "浈江", "曲江", "翁源", "乳源", "始兴", 
     "仁化", "新丰", "乐昌", "南雄", "广东"
 ] 
 
-# 3. 负面敏感词
+# 3. 负面敏感词 (高亮标记)
 NEGATIVE_WORDS = ["避雷", "坑", "差", "事故", "垃圾", "无语", "投诉", "死", "黑", "医疗纠纷"]
 
-# 4. 抓取深度 (翻3页，约60条，覆盖24小时)
-MAX_PAGES = 3
+# 4. 抓取深度 (为了覆盖一天，我们多抓一点)
+MAX_NOTES_PER_KEYWORD = 50 
 
 # 环境变量
 COOKIE_RAW = os.environ.get("XHS_COOKIE")
@@ -51,6 +53,17 @@ def send_wechat(title, content):
     except:
         pass
 
+def get_valid_cookie_string(raw_input):
+    """清洗 Cookie"""
+    if not raw_input: return ""
+    try:
+        cookie_dict = json.loads(raw_input)
+        if isinstance(cookie_dict, dict):
+            return "; ".join([f"{k}={v}" for k, v in cookie_dict.items()])
+    except:
+        pass
+    return str(raw_input).strip().strip('"').strip("'")
+
 def load_history():
     if os.path.exists(HISTORY_FILE):
         try:
@@ -69,54 +82,62 @@ def save_history(history_set):
         pass
 
 def check_relevance(text):
-    """地域过滤"""
-    if not MUST_INCLUDE: return True
+    """
+    地域过滤逻辑：
+    如果 MUST_INCLUDE 为空，则不过滤（看全中国）。
+    如果不为空，则必须包含至少一个地名。
+    """
+    if not MUST_INCLUDE:
+        return True
     for word in MUST_INCLUDE:
         if word in text: return True
     return False
 
 def main():
-    print(">>> 启动小红书监控 (原生Cookie直连版)...")
+    print(">>> 启动小红书广域监控 (24小时版)...")
     
     try:
-        if not COOKIE_RAW:
-            raise ValueError("未设置 XHS_COOKIE")
+        # 1. Cookie 检查
+        final_cookie = get_valid_cookie_string(COOKIE_RAW)
+        if not final_cookie or len(final_cookie) < 50:
+            raise ValueError("Cookie 为空或无效，请去 GitHub 更新 Secrets！")
 
-        # 【核心修改】不做任何解析，只去头尾空格，原样使用
-        # 请确保你在 GitHub 填入的是 a=1; b=2 这种长字符串
-        final_cookie = COOKIE_RAW.strip()
-
-        # 初始化
         client = XhsClient(cookie=final_cookie)
 
-        # 活性检测 (还是得测一下，不然不知道Cookie能不能用)
-        print("🔍 正在测试 Cookie 是否有效...")
+        # 2. 活性检测
+        print("🔍 正在检测 Cookie 活性...")
         try:
             client.get_note_by_keyword("你好", page=1, page_size=1)
         except Exception as e:
-            send_wechat("🚨 Cookie 报错", f"Cookie 似乎无法使用，请检查是否复制完整。\n错误：{e}")
+            send_wechat("🚨 Cookie 失效报警", f"请立即更新 Cookie。\n错误信息：{e}")
             return
 
-        print("✅ Cookie 有效，开始执行广域搜索...")
+        print("✅ 检测通过，开始大范围扫描...")
         history = load_history()
         new_notes = []
         
         for keyword in SEARCH_KEYWORDS:
-            print(f"正在搜索: {keyword}")
+            print(f"正在深度搜索: {keyword} (Top {MAX_NOTES_PER_KEYWORD})")
             
-            # 翻页循环
-            for page in range(1, MAX_PAGES + 1):
+            # 我们这里循环翻页，直到抓够 50 条，确保覆盖“一天内”
+            # 小红书每页通常 20 条，所以我们要抓 3 页
+            fetched_count = 0
+            page = 1
+            
+            while fetched_count < MAX_NOTES_PER_KEYWORD:
                 try:
-                    # sort='time' 按时间倒序
+                    # sort='time' 保证抓到的是最新的
                     notes = client.get_note_by_keyword(keyword, sort='time', page=page, page_size=20)
                 except Exception as e:
-                    print(f"⚠️ 翻页中断: {e}")
+                    print(f"⚠️ 翻页出错: {e}")
                     break
 
                 if not notes or 'items' not in notes or not notes['items']:
-                    break 
+                    break # 没数据了，停止
 
                 for note in notes['items']:
+                    fetched_count += 1
+                    
                     note_id = note.get('id')
                     card = note.get('note_card', {})
                     title = card.get('display_title', '无标题')
@@ -125,7 +146,7 @@ def main():
                     
                     full_text = title + desc
                     
-                    # 1. 地域过滤
+                    # 1. 地域/相关性过滤 (关键！)
                     if not check_relevance(full_text): 
                         continue
                     
@@ -134,7 +155,7 @@ def main():
                     if uid in history: continue
                     history.add(uid)
                     
-                    # 3. 标记
+                    # 3. 组装
                     is_risk = any(w in full_text for w in NEGATIVE_WORDS)
                     emoji = "🔴" if is_risk else "📝"
                     risk_tag = "**[⚠️高危]** " if is_risk else ""
@@ -143,17 +164,20 @@ def main():
                     entry = f"{emoji} {risk_tag}**[{title}]({link})**\n> 👤 {user}\n> 📄 {desc[:40]}..."
                     new_notes.append(entry)
                 
-                time.sleep(1.5) # 稍微快一点点
+                # 翻下一页
+                page += 1
+                time.sleep(2) # 礼貌等待
 
         if new_notes:
-            print(f"✅ 抓取到 {len(new_notes)} 条有效信息")
-            title = f"📢 妇幼舆情 ({len(new_notes)}条)"
-            content = "#### 🔍 24小时广域监测\n\n" + "\n\n".join(new_notes)
+            print(f"✅ 筛选出 {len(new_notes)} 条有效本地情报")
+            # 这里的标题改一下，显得更专业
+            title = f"📢 妇幼舆情日报 ({len(new_notes)}条)"
+            content = "#### 🔍 24小时全网监测\n\n" + "\n\n".join(new_notes)
             send_wechat(title, content)
             save_history(history)
         else:
-            print("⭕ 暂无新增内容")
-            send_wechat("✅ 监控正常", f"脚本运行完毕。\n已搜索关键词：{SEARCH_KEYWORDS}\n暂无韶关地区相关新增内容。")
+            print("⭕ 暂无新增本地相关情报")
+            send_wechat("✅ 监控正常", f"已完成 24小时 范围搜索。\n关键词覆盖：{SEARCH_KEYWORDS}\n未发现韶关及周边相关新增内容。")
 
     except Exception as e:
         error_msg = traceback.format_exc()
