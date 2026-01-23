@@ -7,20 +7,19 @@ import traceback
 from xhs import XhsClient
 
 # --- 核心配置 ---
+# 只要包含"韶关"就抓取
 MUST_INCLUDE = ["韶关"] 
 SEARCH_KEYWORDS = ["韶关市妇幼保健院", "韶关妇幼", "韶关 产科", "韶关 避雷"]
 NEGATIVE_WORDS = ["避雷", "坑", "差", "事故", "垃圾", "无语", "投诉", "死", "黑"]
 
 # 环境变量
-COOKIE_DATA = os.environ.get("XHS_COOKIE")
+COOKIE_RAW = os.environ.get("XHS_COOKIE")
 PUSH_TOKEN = os.environ.get("PUSH_TOKEN")
 HISTORY_FILE = "history.json"
 
 def send_wechat(title, content):
     """发送微信推送"""
-    if not PUSH_TOKEN: 
-        print("❌ 未设置 PUSH_TOKEN")
-        return
+    if not PUSH_TOKEN: return
     url = "http://www.pushplus.plus/send"
     data = {
         "token": PUSH_TOKEN,
@@ -30,43 +29,37 @@ def send_wechat(title, content):
     }
     try:
         requests.post(url, json=data, timeout=10)
-    except Exception as e:
-        print(f"❌ 推送失败: {e}")
+    except:
+        pass
 
-def smart_cookie_loader(cookie_input):
+def get_valid_cookie_string(raw_input):
     """
-    【智能解析】
-    不管输入是 字符串 还是 字典，通通转成字典
-    解决 'dict' object has no attribute 'split' 报错
+    【核心修复】
+    不管输入是 JSON 还是普通文本，最后强制转换成 'k=v; k=v' 的字符串
+    解决 'dict object has no attribute split' 问题
     """
-    if not cookie_input:
-        return {}
+    if not raw_input:
+        return None
     
-    # 1. 如果本来就是字典，直接返回（修复你刚才的报错）
-    if isinstance(cookie_input, dict):
-        return cookie_input
+    # 1. 尝试看看是不是 JSON 格式的字典
+    try:
+        cookie_dict = json.loads(raw_input)
+        if isinstance(cookie_dict, dict):
+            # 如果是字典，把它拼回成字符串 "key=value; key=value"
+            print("检测到 JSON 格式 Cookie，正在转换为字符串...")
+            cookie_parts = []
+            for k, v in cookie_dict.items():
+                cookie_parts.append(f"{k}={v}")
+            return "; ".join(cookie_parts)
+    except:
+        pass # 不是 JSON，那说明本身就是字符串
     
-    # 2. 如果是字符串，尝试解析
-    if isinstance(cookie_input, str):
-        # 情况A: 如果是 JSON 字符串 (例如 {"a": "b"})
-        if cookie_input.strip().startswith('{'):
-            try:
-                return json.loads(cookie_input)
-            except:
-                pass # 解析失败就尝试按分号切割
-
-        # 情况B: 普通 Cookie 字符串 (a=b; c=d)
-        cookies = {}
-        for item in cookie_input.split(';'):
-            if '=' in item:
-                try:
-                    k, v = item.split('=', 1)
-                    cookies[k.strip()] = v.strip()
-                except:
-                    continue
-        return cookies
+    # 2. 如果本身就是字符串，直接用，但清理一下首尾空格/引号
+    clean_str = raw_input.strip()
+    if clean_str.startswith('"') and clean_str.endswith('"'):
+        clean_str = clean_str[1:-1]
         
-    return {}
+    return clean_str
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -91,20 +84,22 @@ def check_relevance(text):
     return False
 
 def main():
-    print(">>> 启动小红书监控 (智能兼容版)...")
+    print(">>> 启动小红书监控 (字符串强制版)...")
     
     try:
-        if not COOKIE_DATA:
+        # 1. 获取并处理 Cookie
+        if not COOKIE_RAW:
             raise ValueError("未设置 XHS_COOKIE")
 
-        # 使用智能加载器，不挑食
-        cookie_dict = smart_cookie_loader(COOKIE_DATA)
+        # 强制转换为字符串
+        final_cookie = get_valid_cookie_string(COOKIE_RAW)
         
-        # 再次检查解析结果
-        if not cookie_dict:
-             raise ValueError("Cookie 解析为空，请检查 Secrets 格式")
+        # 打印一下类型（不打印内容）确认修复
+        print(f"Cookie 类型已修正为: {type(final_cookie)}") 
 
-        client = XhsClient(cookie=cookie_dict)
+        # 2. 初始化客户端 (传入字符串)
+        client = XhsClient(cookie=final_cookie)
+        
         history = load_history()
         new_notes = []
         
@@ -158,6 +153,7 @@ def main():
         error_msg = traceback.format_exc()
         print(f"❌ 错误: {error_msg}")
         send_wechat("⚠️ 监控脚本出错", f"详情：\n{str(e)}")
+        # 抛出异常确保 Action 变红
         raise e
 
 if __name__ == "__main__":
