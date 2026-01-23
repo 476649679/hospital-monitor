@@ -3,15 +3,12 @@ import json
 import time
 import hashlib
 import requests
+import traceback # 用于捕获详细报错
 from xhs import XhsClient
-from http.cookies import SimpleCookie
 
 # --- 核心配置 ---
-# 只要包含"韶关"就抓取，不再强制要求"妇幼"（防止漏抓）
 MUST_INCLUDE = ["韶关"] 
-# 搜索关键词列表
 SEARCH_KEYWORDS = ["韶关市妇幼保健院", "韶关妇幼", "韶关 产科", "韶关 避雷"]
-# 负面敏感词
 NEGATIVE_WORDS = ["避雷", "坑", "差", "事故", "垃圾", "无语", "投诉", "死", "黑"]
 
 # 环境变量
@@ -19,38 +16,42 @@ COOKIE_STR = os.environ.get("XHS_COOKIE")
 PUSH_TOKEN = os.environ.get("PUSH_TOKEN")
 HISTORY_FILE = "history.json"
 
-def cookie_to_dict(cookie_str):
-    """
-    【关键修复】将 Cookie 字符串转换为字典
-    解决 'str' object has no attribute 'value' 报错
-    """
-    if not cookie_str:
-        return {}
-    try:
-        cookie = SimpleCookie()
-        cookie.load(cookie_str)
-        cookies = {}
-        for key, morsel in cookie.items():
-            cookies[key] = morsel.value
-        return cookies
-    except Exception as e:
-        print(f"❌ Cookie 解析失败: {e}")
-        return {}
-
 def send_wechat(title, content):
     """发送微信推送"""
-    if not PUSH_TOKEN: return
+    if not PUSH_TOKEN: 
+        print("❌ 未设置 PUSH_TOKEN，无法推送")
+        return
     url = "http://www.pushplus.plus/send"
     data = {
         "token": PUSH_TOKEN,
         "title": title,
         "content": content,
-        "template": "markdown"
+        "template": "markdown" # 使用 markdown 格式以便显示代码块
     }
     try:
-        requests.post(url, json=data)
-    except:
-        pass
+        resp = requests.post(url, json=data, timeout=10)
+        print(f"📡 推送状态: {resp.status_code}")
+    except Exception as e:
+        print(f"❌ 推送失败: {e}")
+
+def manual_cookie_parse(cookie_str):
+    """
+    【暴力解析】不依赖任何库，手动切割字符串
+    解决 'SimpleCookie' 可能解析失败的问题
+    """
+    if not cookie_str: return {}
+    cookies = {}
+    # 按分号分割
+    for item in cookie_str.split(';'):
+        # 只要有等号的都算
+        if '=' in item:
+            try:
+                # 只切第一个等号，防止值里面也有等号
+                k, v = item.split('=', 1)
+                cookies[k.strip()] = v.strip()
+            except:
+                continue
+    return cookies
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -62,96 +63,97 @@ def load_history():
     return set()
 
 def save_history(history_set):
-    data = list(history_set)[-1000:]
-    with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f)
+    try:
+        data = list(history_set)[-1000:]
+        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"❌ 保存历史文件失败: {e}")
 
 def check_relevance(text):
-    """关键词过滤"""
     for word in MUST_INCLUDE:
-        if word in text:
-            return True
+        if word in text: return True
     return False
 
 def main():
-    print(">>> 启动小红书监控 (Cookie兼容版)...")
+    print(">>> 启动小红书监控 (调试版)...")
     
-    if not COOKIE_STR:
-        print("❌ 错误：未设置 XHS_COOKIE")
-        send_wechat("❌ 监控中断", "请去 GitHub Settings 填写 XHS_COOKIE")
-        return
+    try:
+        # 1. 检查 Cookie
+        if not COOKIE_STR:
+            raise ValueError("未设置 XHS_COOKIE，请去 GitHub Settings 填写！")
 
-    # 【关键修复】这里不再直接传字符串，而是传转换后的字典
-    cookie_dict = cookie_to_dict(COOKIE_STR)
-    client = XhsClient(cookie=cookie_dict)
-    
-    history = load_history()
-    new_notes = []
-    
-    for keyword in SEARCH_KEYWORDS:
-        print(f"正在搜索: {keyword}")
-        try:
-            # 搜索笔记
-            notes = client.get_note_by_keyword(keyword, sort='time', page=1, page_size=20)
-        except Exception as e:
-            # 捕捉所有错误并打印详情
-            print(f"⚠️ 抓取报错 (关键词: {keyword}): {str(e)}")
-            continue
-
-        if not notes or 'items' not in notes:
-            continue
-
-        for note in notes['items']:
-            note_id = note.get('id')
-            if not note_id: continue
+        # 2. 转换 Cookie
+        print("正在解析 Cookie...")
+        cookie_dict = manual_cookie_parse(COOKIE_STR)
+        if not cookie_dict:
+            raise ValueError("Cookie 解析为空！请检查复制的内容格式是否正确。")
             
-            card = note.get('note_card', {})
-            title = card.get('display_title', '无标题')
-            desc = card.get('desc', '') 
-            user = card.get('user', {}).get('nickname', '未知')
-            
-            full_text = title + desc
-            
-            # 1. 过滤无关内容
-            if not check_relevance(full_text):
+        # 3. 初始化客户端
+        client = XhsClient(cookie=cookie_dict)
+        
+        history = load_history()
+        new_notes = []
+        
+        # 4. 循环搜索
+        for keyword in SEARCH_KEYWORDS:
+            print(f"正在搜索: {keyword}")
+            try:
+                notes = client.get_note_by_keyword(keyword, sort='time', page=1, page_size=20)
+            except Exception as e:
+                print(f"⚠️ 搜索 '{keyword}' 失败: {e}")
                 continue
+
+            if not notes or 'items' not in notes:
+                continue
+
+            for note in notes['items']:
+                note_id = note.get('id')
+                if not note_id: continue
                 
-            # 2. 去重
-            uid = hashlib.md5(note_id.encode()).hexdigest()
-            if uid in history:
-                continue
-            history.add(uid)
+                card = note.get('note_card', {})
+                title = card.get('display_title', '无标题')
+                desc = card.get('desc', '') 
+                
+                full_text = title + desc
+                
+                # 过滤
+                if not check_relevance(full_text): continue
+                
+                # 去重
+                uid = hashlib.md5(note_id.encode()).hexdigest()
+                if uid in history: continue
+                history.add(uid)
+                
+                # 负面判定
+                is_risk = any(w in full_text for w in NEGATIVE_WORDS)
+                emoji = "🔴" if is_risk else "📝"
+                
+                link = f"https://www.xiaohongshu.com/explore/{note_id}"
+                entry = f"{emoji} **[{title}]({link})**\n> {desc[:50]}..."
+                new_notes.append(entry)
             
-            # 3. 负面标记
-            is_risk = False
-            for risk_word in NEGATIVE_WORDS:
-                if risk_word in full_text:
-                    is_risk = True
-                    break
-            
-            link = f"https://www.xiaohongshu.com/explore/{note_id}"
-            emoji = "🔴" if is_risk else "📝"
-            risk_tag = "**[⚠️高危]** " if is_risk else ""
-            
-            entry = f"{emoji} {risk_tag}**{title}**\n" \
-                    f"> 👤 {user}\n" \
-                    f"> 📄 {desc[:60]}...\n" \
-                    f"> 🔗 [点击查看]({link})"
-            
-            new_notes.append(entry)
-            
-        time.sleep(2)
+            time.sleep(2)
 
-    if new_notes:
-        print(f"✅ 发现 {len(new_notes)} 条新笔记，推送中...")
-        title = f"📢 小红书舆情 ({len(new_notes)}条)"
-        content = "#### 🔍 监控日报\n\n" + "\n\n".join(new_notes)
-        send_wechat(title, content)
-        save_history(history)
-    else:
-        print("⭕ 今日无新增相关笔记")
-        # 发送心跳回执
-        send_wechat("✅ 监控正常", f"脚本运行完毕，暂无关于“韶关”的新增笔记。\n时间: {time.strftime('%H:%M')}")
+        # 5. 推送结果
+        if new_notes:
+            print(f"✅ 发现 {len(new_notes)} 条新笔记")
+            title = f"📢 舆情日报 ({len(new_notes)}条)"
+            content = "#### 🔍 监控结果\n\n" + "\n\n".join(new_notes)
+            send_wechat(title, content)
+            save_history(history)
+        else:
+            print("⭕ 无新增笔记")
+            # 每天还是发个心跳，让你知道它活着
+            send_wechat("✅ 监控运行正常", f"脚本运行成功，未发现新内容。\n时间: {time.strftime('%H:%M')}")
+
+    except Exception as e:
+        # --- 核心改动：捕捉所有未知错误并推送到微信 ---
+        error_msg = traceback.format_exc()
+        print(f"❌ 发生致命错误: {error_msg}")
+        send_wechat("⚠️ 监控脚本崩溃", f"脚本运行出错，请查看详情：\n\n```\n{str(e)}\n```")
+        # 抛出异常让 GitHub Action 依然显示红色，方便查看
+        raise e
 
 if __name__ == "__main__":
     main()
